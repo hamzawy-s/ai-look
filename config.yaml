@@ -1,0 +1,17 @@
+app:
+  name: AI Look
+  environment: development
+  log_level: INFO
+
+database:
+  path: data/lifecycle.db
+
+ai:
+  enabled: false
+  base_url: http://127.0.0.1:8080/v1
+  model: local
+
+scan:
+  max_concurrency: 3
+  request_timeout_seconds: 15
+  respect_scope: true

@@ -1,0 +1,26 @@
+[
+    {
+        "id": "6491c1ea-14c0-4188-aba4-3706ce028be0",
+        "type": "SQL_INJECTION",
+        "target": "/api/users",
+        "parameter": "id",
+        "method": "GET",
+        "severity": "HIGH",
+        "confidence": 0.9,
+        "cvss_score": null,
+        "risk_score": 7.2,
+        "evidence": [
+            "SQL error returned after injection test."
+        ],
+        "source": "ADAPTER_1",
+        "status": "OPEN",
+        "remediation": "",
+        "observation_status": "PRESENT",
+        "cwe_id": null,
+        "fingerprint": "363b93a196dd6e1dbab5e4ce3b49c22c1e5a0bdeca77b3aef01fae9a40b523ef",
+        "ai_interpretation": null,
+        "requires_human_review": false,
+        "first_seen": "2026-09-01T10:00:00.000000Z",
+        "last_seen": "2026-09-01T10:00:00.000000Z"
+    }
+]
