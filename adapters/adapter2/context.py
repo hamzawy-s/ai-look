@@ -21,6 +21,7 @@ def create_context(
     scope: Any = _DEFAULT,
     scope_config: Optional[dict] = None,
     request_engine: Any = None,
+    budget_manager: Any = None,
     coverage: Any = None,
     dedup_engine: Any = None,
 ) -> AdapterContext:
@@ -48,6 +49,7 @@ def create_context(
         target_url=target_url,
         scope_engine=scope_engine,
         request_engine=request_engine,
+        budget_manager=budget_manager,
         coverage=cov,
         dedup_engine=dedup,
     )

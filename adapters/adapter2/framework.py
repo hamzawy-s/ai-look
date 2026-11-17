@@ -57,6 +57,11 @@ class TestRequest:
     timeout_seconds: float = 10.0
     payload: Optional[Payload] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    follow_redirects: Optional[bool] = None
+
+    def __post_init__(self):
+        if self.follow_redirects is not None and type(self.follow_redirects) is not bool:
+            raise ValueError("follow_redirects must be a boolean or None")
 
     def build_url(self) -> str:
         parsed = urlparse(self.url)
@@ -76,6 +81,7 @@ class TestRequest:
             self.build_url(),
             urlencode(sorted(params, key=lambda item: (str(item[0]), str(item[1])))),
             self.body or "",
+            str(self.follow_redirects),
         ]
         return hashlib.sha256("|".join(components).encode()).hexdigest()[:16]
 
@@ -339,9 +345,17 @@ class BaseVulnerabilityAdapter:
             )
             async with semaphore:
                 self.budget_manager.reserve(self.scan_id, actual_url)
+                send_options = {
+                    "method": request.method,
+                    "url": actual_url,
+                    "headers": request.headers,
+                    "content": request.body,
+                    "timeout": request.timeout_seconds,
+                }
+                if request.follow_redirects is not None:
+                    send_options["follow_redirects"] = request.follow_redirects
                 result = await self.request_engine.send_request(
-                    method=request.method, url=actual_url, headers=request.headers,
-                    content=request.body, timeout=request.timeout_seconds,
+                    **send_options,
                 )
             response = TestResponse.from_request_result(result, request)
         except InvalidBudgetOriginError as exc:

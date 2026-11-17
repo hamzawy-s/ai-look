@@ -9,8 +9,10 @@ from enum import Enum
 from typing import List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
+from .budget import InvalidBudgetOriginError
 from .framework import (
     AdapterScanResult,
+    AttemptStatus,
     BaseVulnerabilityAdapter,
     Evidence,
     Payload,
@@ -425,6 +427,143 @@ class SQLiDetector(BaseVulnerabilityAdapter):
             coverage_outcome=(TestOutcome.INCONCLUSIVE if candidate else self._scan_problem_outcome or TestOutcome.ABSENT),
             reason=(candidate.reason if candidate else self._scan_problem_reason or "completed analyzable probes without a candidate"),
             evidence_count=len(candidate.evidence) if candidate else 0,
+        )
+
+    async def scan_parameter_safe(self, url, parameter, original_value):
+        """Screen a value with bounded AND controls only; never use legacy probes.
+
+        This Phase 5 entry point deliberately avoids error-based quote breakouts,
+        OR tautologies, timing payloads, and UNION payloads. A stable
+        three-round signal can only create a candidate; the separate
+        SQLiVerifier repeats the sequence before any promotion.
+        """
+        from .sqli_verification import (
+            SQLiVerifier,
+            classify_original_value,
+        )
+
+        if not self._is_authorized(url, "GET"):
+            return AdapterScanResult([], [], TestOutcome.SKIPPED,
+                                     "scope rejected before safe SQLi screening", 0)
+        if self.request_engine is None or not callable(getattr(self.request_engine, "send_request", None)):
+            return AdapterScanResult([], [], TestOutcome.ERROR,
+                                     "request engine unavailable", 0)
+        context = classify_original_value(original_value)
+        if context is None:
+            return AdapterScanResult([], [], TestOutcome.SKIPPED,
+                                     "original value is outside the supported literal grammars", 0)
+
+        values = {
+            "baseline": str(original_value),
+            "true": SQLiVerifier._request_value(str(original_value), context, "true"),
+            "false": SQLiVerifier._request_value(str(original_value), context, "false"),
+        }
+        try:
+            first_url = TestRequest(url, params={parameter: values["baseline"]}).build_url()
+            available = self.budget_manager.limit(self.scan_id, first_url) - self.budget_manager.used(
+                self.scan_id, first_url
+            )
+        except (InvalidBudgetOriginError, ValueError):
+            return AdapterScanResult([], [], TestOutcome.SKIPPED,
+                                     "safe SQLi screening has no valid budget origin", 0)
+        if available < 9:
+            return AdapterScanResult([], [], TestOutcome.SKIPPED,
+                                     "safe SQLi screening requires nine available reservations", 0)
+        observations = {group: [] for group in values}
+        requests = {group: [] for group in values}
+        rotations = (
+            ("baseline", "true", "false"),
+            ("true", "false", "baseline"),
+            ("false", "baseline", "true"),
+        )
+        request_count = 0
+        for order in rotations:
+            for group in order:
+                value = values[group]
+                payload = None if group == "baseline" else Payload(
+                    value=value,
+                    payload_type=PayloadType.BOOLEAN_BASED,
+                    description=f"Safe SQLi screening {group.upper()} control",
+                )
+                request = TestRequest(
+                    url=url,
+                    method="GET",
+                    params={parameter: value},
+                    follow_redirects=False,
+                    payload=payload,
+                )
+                outcome = await self.execute_request(request)
+                if not outcome.ok:
+                    self._capture_attempt(outcome)
+                    mapped = outcome.coverage_outcome
+                    if outcome.status in {AttemptStatus.BUDGET_EXHAUSTED,
+                                          AttemptStatus.SCOPE_REJECTED} and request_count:
+                        mapped = TestOutcome.INCONCLUSIVE
+                    return AdapterScanResult([], [], mapped, outcome.reason, request_count)
+                request_count += 1
+                response = outcome.response
+                if (not response_is_analyzable(response) or not response.body.strip()
+                        or response.status_code is None or not 200 <= response.status_code < 300):
+                    return AdapterScanResult(
+                        [], [], TestOutcome.INCONCLUSIVE,
+                        "safe SQLi screening received an empty, incomplete, or non-success response",
+                        request_count,
+                    )
+                if SQLiVerifier._contains_control_reflection(response.body, context, group):
+                    return AdapterScanResult(
+                        [], [], TestOutcome.INCONCLUSIVE,
+                        "safe SQLi screening control was reflected in a response",
+                        request_count,
+                    )
+                normalized, _ = SQLiVerifier._normalize(response.body, value, str(original_value))
+                observations[group].append((response, normalized))
+                requests[group].append(request)
+
+        all_responses = [response for group in values for response, _ in observations[group]]
+        statuses = {response.status_code for response in all_responses}
+        if len(statuses) != 1:
+            return AdapterScanResult([], [], TestOutcome.INCONCLUSIVE,
+                                     "safe SQLi screening statuses were not comparable", request_count)
+        normalized_groups = {
+            group: [normalized for _, normalized in observations[group]]
+            for group in values
+        }
+        if any(len(set(group_values)) != 1 for group_values in normalized_groups.values()):
+            return AdapterScanResult([], [], TestOutcome.INCONCLUSIVE,
+                                     "safe SQLi screening responses were unstable", request_count)
+
+        baseline = normalized_groups["baseline"][0]
+        true_body = normalized_groups["true"][0]
+        false_body = normalized_groups["false"][0]
+        if baseline != true_body or false_body == true_body:
+            return AdapterScanResult(
+                [], [], TestOutcome.ABSENT,
+                "complete stable safe Boolean screening did not establish SQLi behavior",
+                request_count,
+            )
+
+        true_response = observations["true"][0][0]
+        false_response = observations["false"][0][0]
+        confidence = self._calculate_boolean_based_confidence(
+            observations["baseline"][0][0], true_response, false_response
+        )
+        evidence = [
+            Evidence.from_request_response(requests[group][0], observations[group][0][0],
+                                           f"Repeated safe Boolean {group.upper()} control")
+            for group in ("true", "false")
+        ]
+        candidate = self.make_candidate(
+            finding_type="SQL_INJECTION",
+            target=url,
+            parameter=parameter,
+            method="GET",
+            technique="safe_boolean_screen",
+            confidence=confidence,
+            evidence=evidence,
+            reason="a repeated read-only AND control screen is suggestive and requires verification",
+        )
+        return AdapterScanResult(
+            [], [candidate], TestOutcome.INCONCLUSIVE, candidate.reason, request_count
         )
 
     def _create_sqli_candidate(self, url, parameter, result, technique_name):

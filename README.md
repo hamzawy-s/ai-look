@@ -4,7 +4,7 @@
 
 ### An AI-Augmented, Lifecycle-Wide Web Application Security Assessment Platform
 
-![Phase 4 accepted](https://img.shields.io/badge/Phase%200%E2%80%934-Accepted-691A26)
+![Phases 0–5 accepted](https://img.shields.io/badge/Phases%200%E2%80%935-Accepted-691A26)
 ![Python 3.10](https://img.shields.io/badge/Python-3.10-36454F?logo=python&logoColor=white)
 [![GitHub stars](https://img.shields.io/github/stars/hamzawy-s/ai-look?style=flat&color=691A26)](https://github.com/hamzawy-s/ai-look/stargazers)
 
@@ -77,7 +77,7 @@ For a multi-adapter scan, create one `BudgetManager` and inject the same instanc
 |---|---|
 | Core lifecycle | Stable fingerprints, persistence, lifecycle handling, coverage-aware processing, and status-gated AI tasks. |
 | Scope and request handling | Strict URL and host checks, explicit scope enforcement, DNS validation and IP pinning, controlled redirects, credential stripping across origins, bounded responses, and transport metadata. |
-| SQL Injection | Error, boolean, UNION, and repeated paired timing heuristics can produce **candidates**. No SQLi adapter result is promoted to a confirmed Finding. |
+| SQL Injection | The explicit Phase 5 workflow uses repeated baseline and read-only `AND` TRUE/FALSE controls; it does not call the legacy quote-breakout, `OR`, timing, or UNION probes. Candidates go through a separate repeated verifier, and only a matching **VERIFIED** report can promote one. |
 | Cross-Site Scripting | Reflected syntax and static DOM signals can produce **candidates** with inferred context and CSP assessment. Browser execution is not verified. |
 | WAF | Harmless baseline, query-marker, and header-marker probes can produce an informational vendor observation. An HTTP status alone is insufficient. |
 | Backend fingerprinting | Passive signals from explicit response headers; no active fingerprinting requests. |
@@ -93,9 +93,11 @@ For a multi-adapter scan, create one `BudgetManager` and inject the same instanc
 | Phase 2 | Scope engine | **Accepted** |
 | Phase 3 | Request engine | **Accepted** |
 | Phase 4 | Unified execution and orchestration | **Accepted** |
-| Phase 5 | Safe SQLi verification and confidence validation | **Not started** |
+| Phase 5 | Safe SQLi verification and confidence validation | **Accepted** |
 
 Phase 4 validation is recorded in [`docs/phase4-audit.md`](docs/phase4-audit.md). The original Windows Python 3.10.11 Phase 4 run recorded 242 collected and passing tests, 34 focused Phase 4 tests, a passing compile check, and a passing Phase 0–3 plus adapter regression set. The GitHub synchronization also retains and updates a remote-only Core fingerprint regression test; the combined repository suite therefore has one additional test.
+
+Phase 5 design, security boundaries, independent review results, and validation are recorded in [`docs/phase5-audit.md`](docs/phase5-audit.md). The dedicated Phase 5 branch was pushed and its remote hash verified.
 
 ## Repository structure
 
@@ -108,7 +110,8 @@ Phase 4 validation is recorded in [`docs/phase4-audit.md`](docs/phase4-audit.md)
 │   ├── adapter3/                 # Scheduling and regression components
 │   └── shared/                   # Shared browser, JavaScript, and request helpers
 ├── docs/
-│   └── phase4-audit.md
+│   ├── phase4-audit.md
+│   └── phase5-audit.md
 ├── _legacy/                      # Archived historical regression test
 ├── mobile/                       # Project placeholder
 ├── notification/                 # In-process event bus
@@ -170,7 +173,7 @@ Run the complete test suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, request safety and TLS, budget accounting, detector behavior, reporting, and controlled localhost integration through the real Phase 3 Request Engine. The Phase 4 acceptance run passed 242 tests; after preserving and updating one remote-only Core fingerprint test during synchronization, the combined repository run passed 243 tests on Windows Python 3.10.11. See the audit report for focused and regression results.
+The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, request safety and TLS, budget accounting, detector behavior, reporting, and controlled localhost integration through the real Phase 3 Request Engine. The Phase 5 validation run passed 51 focused Phase 5 tests and 294 total tests on Windows Python 3.10.11; compileall also passed. See the audit reports for baseline and Phase 5 details.
 
 ## Security and safety design
 
@@ -184,16 +187,16 @@ The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, 
 
 ## Current limitations
 
-- SQLi remains candidate-only until a dedicated verification workflow is implemented. Repeated timing probes are candidate heuristics, not confirmed SQLi verification. The vulnerable and parameterized integration fixtures use SQLite and do not establish compatibility with other DBMS products.
+- SQLi verification supports only conservative numeric and bare single-quoted string input grammars and Boolean controls. Other SQL contexts and DBMS products are unsupported; the controlled vulnerable and parameterized integration fixtures use SQLite. The explicit `AssessmentOrchestrator.assess_sqli()` entry point requires timing and UNION probes to be disabled, suppresses redirects per Phase 5 request, and is not automatically invoked by `main.py`.
 - XSS remains candidate-only pending browser execution instrumentation. Static syntax, JavaScript parsing, or a DOM sink by itself does not prove exploitability.
 - SSRF requires an owned allowlisted callback receiver and bounded interaction wait before controlled verification.
 - LFI requires a test-owned temporary sentinel file and verification limited to that fixture.
 - Command Injection requires a controlled fixture with a bounded deterministic signal; arbitrary commands are not sent.
-- No user-facing scan CLI or service API is exposed. Browser verification and Phase 5 have not started.
+- No user-facing scan CLI or service API is exposed. Browser verification and active SSRF, LFI, and command-injection verification remain deferred.
 
 ## Roadmap
 
-**Phase 5 — Safe SQL Injection Verification & Confidence Validation** is not started. Its scope will focus on controlled verification and confidence handling. Later phases remain provisional until separately defined.
+**Phase 5 — Safe SQL Injection Verification & Confidence Validation** is accepted. Later phases remain provisional until separately defined.
 
 ## Contribution and license
 
