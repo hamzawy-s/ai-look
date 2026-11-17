@@ -1,0 +1,28 @@
+# Python environments and bytecode
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets and editor settings
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Local databases, logs, and generated scan reports
+*.db
+*.sqlite
+*.sqlite3
+*.log
+report_scan_*.json
+report_*.csv
