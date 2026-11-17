@@ -4,7 +4,7 @@
 
 ### An AI-Augmented, Lifecycle-Wide Web Application Security Assessment Platform
 
-![Phases 0–5 accepted](https://img.shields.io/badge/Phases%200%E2%80%935-Accepted-691A26)
+![Phases 0–6 accepted](https://img.shields.io/badge/Phases%200%E2%80%936-Accepted-691A26)
 ![Python 3.10](https://img.shields.io/badge/Python-3.10-36454F?logo=python&logoColor=white)
 [![GitHub stars](https://img.shields.io/github/stars/hamzawy-s/ai-look?style=flat&color=691A26)](https://github.com/hamzawy-s/ai-look/stargazers)
 
@@ -78,7 +78,7 @@ For a multi-adapter scan, create one `BudgetManager` and inject the same instanc
 | Core lifecycle | Stable fingerprints, persistence, lifecycle handling, coverage-aware processing, and status-gated AI tasks. |
 | Scope and request handling | Strict URL and host checks, explicit scope enforcement, DNS validation and IP pinning, controlled redirects, credential stripping across origins, bounded responses, and transport metadata. |
 | SQL Injection | The explicit Phase 5 workflow uses repeated baseline and read-only `AND` TRUE/FALSE controls; it does not call the legacy quote-breakout, `OR`, timing, or UNION probes. Candidates go through a separate repeated verifier, and only a matching **VERIFIED** report can promote one. |
-| Cross-Site Scripting | Reflected syntax and static DOM signals can produce **candidates** with inferred context and CSP assessment. Browser execution is not verified. |
+| Cross-Site Scripting | The explicit Phase 6 `AssessmentOrchestrator.assess_xss()` workflow screens GET query inputs with an inert marker and verifies supported HTML body reflections in isolated Chromium. Only exact browser proof can promote a matching candidate. Legacy scans and unsupported contexts remain candidate-only. |
 | WAF | Harmless baseline, query-marker, and header-marker probes can produce an informational vendor observation. An HTTP status alone is insufficient. |
 | Backend fingerprinting | Passive signals from explicit response headers; no active fingerprinting requests. |
 | SSRF, LFI, Command Injection | Adapter interfaces are present, but scans report **SKIPPED** pending controlled verification workflows. |
@@ -94,10 +94,11 @@ For a multi-adapter scan, create one `BudgetManager` and inject the same instanc
 | Phase 3 | Request engine | **Accepted** |
 | Phase 4 | Unified execution and orchestration | **Accepted** |
 | Phase 5 | Safe SQLi verification and confidence validation | **Accepted** |
+| Phase 6 | Safe reflected XSS verification and browser execution proof | **Accepted** |
 
 Phase 4 validation is recorded in [`docs/phase4-audit.md`](docs/phase4-audit.md). The original Windows Python 3.10.11 Phase 4 run recorded 242 collected and passing tests, 34 focused Phase 4 tests, a passing compile check, and a passing Phase 0–3 plus adapter regression set. The GitHub synchronization also retains and updates a remote-only Core fingerprint regression test; the combined repository suite therefore has one additional test.
 
-Phase 5 design, security boundaries, independent review results, and validation are recorded in [`docs/phase5-audit.md`](docs/phase5-audit.md). The dedicated Phase 5 branch was pushed and its remote hash verified.
+Phase 5 design, security boundaries, independent review results, and validation are recorded in [`docs/phase5-audit.md`](docs/phase5-audit.md). Phase 6 design, browser network controls, independent review, validation, and limitations are recorded in [`docs/phase6-audit.md`](docs/phase6-audit.md).
 
 ## Repository structure
 
@@ -111,7 +112,8 @@ Phase 5 design, security boundaries, independent review results, and validation 
 │   └── shared/                   # Shared browser, JavaScript, and request helpers
 ├── docs/
 │   ├── phase4-audit.md
-│   └── phase5-audit.md
+│   ├── phase5-audit.md
+│   └── phase6-audit.md
 ├── _legacy/                      # Archived historical regression test
 ├── mobile/                       # Project placeholder
 ├── notification/                 # In-process event bus
@@ -130,6 +132,7 @@ Phase 5 design, security boundaries, independent review results, and validation 
 
 - Python 3.10.11 development environment
 - `httpx` / `httpcore` for asynchronous HTTP transport
+- Playwright with a separately installed Chromium runtime for isolated Phase 6 verification
 - Pydantic models for structured data
 - `aiosqlite` for asynchronous SQLite persistence
 - `pytest` and `pytest-asyncio` for tests
@@ -147,7 +150,13 @@ python -m pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-The development requirements pin the tested HTTP, model, database, and test dependencies. The runtime requirements specify minimum versions except for the pinned HTTP client packages.
+The development requirements pin the tested HTTP, model, database, browser-automation, and test dependencies. Runtime requirements pin the HTTP client packages and Playwright; the remaining runtime packages specify minimum versions.
+
+Phase 6 uses the pinned Playwright package and a separate Chromium download. Install it after the Python requirements:
+
+```powershell
+python -m playwright install chromium
+```
 
 ## Configuration
 
@@ -173,6 +182,14 @@ Run the complete test suite from the repository root:
 python -m pytest tests/ -v
 ```
 
+Run the real-browser Phase 6 integration and security matrix:
+
+```powershell
+python -m pytest tests/test_phase6_xss_verification.py -v
+```
+
+The browser tests use only controlled loopback fixtures. They require the pinned Playwright package and installed Chromium runtime.
+
 The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, request safety and TLS, budget accounting, detector behavior, reporting, and controlled localhost integration through the real Phase 3 Request Engine. The Phase 5 validation run passed 51 focused Phase 5 tests and 294 total tests on Windows Python 3.10.11; compileall also passed. See the audit reports for baseline and Phase 5 details.
 
 ## Security and safety design
@@ -183,12 +200,13 @@ The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, 
 - DNS results are validated and the selected address is pinned for transport.
 - Request and response sizes and timeouts are bounded; incomplete or undecoded responses cannot support negative detection claims.
 - Evidence redaction removes sensitive headers, common credential values, and configured secrets.
+- Phase 6 browser traffic is fulfilled only from the shared scope-aware, DNS-pinned RequestEngine; redirects are stopped, WebSockets are blocked, and browser-side local storage is isolated to a fresh temporary context.
 - WAF probes are harmless. SSRF, LFI, and CMDi do not issue external, internal-service, system-file, or arbitrary-command probes.
 
 ## Current limitations
 
 - SQLi verification supports only conservative numeric and bare single-quoted string input grammars and Boolean controls. Other SQL contexts and DBMS products are unsupported; the controlled vulnerable and parameterized integration fixtures use SQLite. The explicit `AssessmentOrchestrator.assess_sqli()` entry point requires timing and UNION probes to be disabled, suppresses redirects per Phase 5 request, and is not automatically invoked by `main.py`.
-- XSS remains candidate-only pending browser execution instrumentation. Static syntax, JavaScript parsing, or a DOM sink by itself does not prove exploitability.
+- Phase 6 supports reflected GET query inputs only when the inert marker is a uniquely parsed HTML body text node. Attribute, JavaScript-string, JSON, stored, blind, DOM-only, POST, and authenticated XSS verification are unsupported. Read [`docs/phase6-audit.md`](docs/phase6-audit.md) before invoking the explicit browser workflow.
 - SSRF requires an owned allowlisted callback receiver and bounded interaction wait before controlled verification.
 - LFI requires a test-owned temporary sentinel file and verification limited to that fixture.
 - Command Injection requires a controlled fixture with a bounded deterministic signal; arbitrary commands are not sent.
@@ -196,7 +214,7 @@ The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, 
 
 ## Roadmap
 
-**Phase 5 — Safe SQL Injection Verification & Confidence Validation** is accepted. Later phases remain provisional until separately defined.
+**Phases 5 and 6 — Safe SQLi Verification and Safe Reflected XSS Verification** are accepted. Later phases remain provisional until separately defined.
 
 ## Contribution and license
 

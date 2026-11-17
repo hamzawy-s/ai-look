@@ -20,6 +20,14 @@ from .sqli_verification import (
     is_sqli_finding_type,
     is_supported_parameter_name,
 )
+from .xss import XSSDetector
+from .xss_verification import (
+    XSSVerificationOutcome,
+    XSSVerificationReport,
+    XSSVerifier,
+    is_xss_finding_type,
+    is_supported_xss_parameter_name,
+)
 
 
 @dataclass
@@ -33,6 +41,7 @@ class AssessmentResult:
     verification_reports: List[SQLiVerificationReport] = field(default_factory=list)
     coverage_outcome: TestOutcome = TestOutcome.SKIPPED
     reason: str = ""
+    xss_verification_reports: List[XSSVerificationReport] = field(default_factory=list)
 
     @property
     def evidence_count(self) -> int:
@@ -58,6 +67,7 @@ class AssessmentOrchestrator:
         self._raw_findings: Dict[str, Finding] = {}
         self._candidates: Dict[Tuple[str, str, str, str, str], DetectionCandidate] = {}
         self._verification_reports: Dict[str, SQLiVerificationReport] = {}
+        self._xss_verification_reports: Dict[str, XSSVerificationReport] = {}
         self._outcomes: List[TestOutcome] = []
         self._reasons: List[str] = []
         self._finalized = False
@@ -104,6 +114,10 @@ class AssessmentOrchestrator:
                 raise ValueError(
                     "SQLi Findings must be promoted by assess_sqli after a matching VERIFIED report"
                 )
+            if is_xss_finding_type(finding.type):
+                raise ValueError(
+                    "XSS Findings must be promoted by assess_xss after a matching VERIFIED report"
+                )
             fingerprint = self.context.dedup_engine.generate_fingerprint(finding)
             finding.fingerprint = fingerprint
             self._raw_findings.setdefault(fingerprint, finding)
@@ -115,6 +129,9 @@ class AssessmentOrchestrator:
             key = self._candidate_key(candidate)
             report = self._verification_reports.get(candidate_fingerprint(candidate))
             if report is not None and report.outcome == SQLiVerificationOutcome.VERIFIED:
+                continue
+            xss_report = self._xss_verification_reports.get(candidate_fingerprint(candidate))
+            if xss_report is not None and xss_report.outcome == XSSVerificationOutcome.VERIFIED:
                 continue
             candidate = self._store_candidate(candidate)
             identities.add((candidate.finding_type, candidate.target,
@@ -384,6 +401,283 @@ class AssessmentOrchestrator:
                 self._outcomes.append(coverage_outcome)
         return new_reports
 
+    def _record_xss_coverage(
+        self,
+        *,
+        parameter: str,
+        outcome: TestOutcome,
+        reason: str,
+        family: str,
+    ) -> None:
+        self.context.coverage.record(
+            input_id=parameter or "XSS",
+            test_family=family,
+            outcome=outcome,
+            target=self.context.target_url,
+            finding_type="XSS",
+            parameter=parameter,
+            method="GET",
+            parameter_location="QUERY",
+            evidence=[reason] if reason else [],
+            reason=reason,
+        )
+
+    def _xss_input_report(
+        self,
+        parameter: str,
+        outcome: XSSVerificationOutcome,
+        reason: str,
+    ) -> XSSVerificationReport:
+        finding_fingerprint = self.context.dedup_engine.fingerprint_for(
+            "GET", self.context.target_url, "XSS", parameter,
+        )
+        return XSSVerificationReport(
+            candidate_fingerprint=None,
+            finding_fingerprint=finding_fingerprint,
+            target=redact_url(self.context.target_url),
+            parameter=parameter,
+            outcome=outcome,
+            reason=reason,
+            cleanup_completed=True,
+        )
+
+    async def assess_xss(
+        self,
+        detector: XSSDetector,
+        parameters: Mapping[str, str],
+    ) -> List[XSSVerificationReport]:
+        """Safely screen query parameters and verify only matching XSS candidates.
+
+        Values in ``parameters`` are intentionally not sent or retained. The
+        detector substitutes an inert, unique marker and the verifier sends
+        one controlled local-only proof payload for supported HTML body text.
+        """
+        if self._finalized:
+            raise RuntimeError("assessment has already been finalized")
+        if not isinstance(detector, XSSDetector):
+            raise TypeError("detector must be an XSSDetector")
+        if not isinstance(parameters, Mapping):
+            raise TypeError("parameters must map query parameter names to original values")
+        if detector.request_engine is not self.context.request_engine:
+            raise ValueError("XSS detector must reuse the assessment RequestEngine")
+        if detector.scope_engine is not self.context.scope_engine:
+            raise ValueError("XSS detector must reuse the assessment ScopeEngine")
+        if self.context.budget_manager is None or detector.budget_manager is not self.context.budget_manager:
+            raise ValueError("XSS detector must reuse the assessment BudgetManager")
+        if detector.scan_id != self.context.scan_id:
+            raise ValueError("XSS detector scan_id must match the assessment")
+
+        new_reports: List[XSSVerificationReport] = []
+
+        for parameter, _original_value in parameters.items():
+            parameter_label = sanitize_snippet(parameter, 64) if isinstance(parameter, str) else "[INVALID]"
+            if not is_supported_xss_parameter_name(parameter):
+                reason = "query parameter name is outside the supported grammar; no request was sent"
+                report = self._xss_input_report(
+                    parameter_label,
+                    XSSVerificationOutcome.NOT_TESTED,
+                    reason,
+                )
+                self._xss_verification_reports[
+                    f"input:{report.finding_fingerprint}:{parameter_label}"
+                ] = report
+                new_reports.append(report)
+                self._record_xss_coverage(
+                    parameter=parameter_label,
+                    outcome=TestOutcome.SKIPPED,
+                    reason=reason,
+                    family="XSS_REFLECTION",
+                )
+                self._outcomes.append(TestOutcome.SKIPPED)
+                self._reasons.append(f"XSS {parameter_label}: {reason}")
+                continue
+
+            if not detector._is_authorized(self.context.target_url, "GET"):
+                reason = "assessment target was rejected by scope before XSS requests were sent"
+                report = self._xss_input_report(
+                    str(parameter), XSSVerificationOutcome.BLOCKED, reason,
+                )
+                self._xss_verification_reports[
+                    f"input:{report.finding_fingerprint}:{parameter}"
+                ] = report
+                new_reports.append(report)
+                self._record_xss_coverage(
+                    parameter=str(parameter), outcome=TestOutcome.BLOCKED,
+                    reason=reason, family="XSS_REFLECTION",
+                )
+                self._outcomes.append(TestOutcome.BLOCKED)
+                self._reasons.append(f"XSS {parameter}: {reason}")
+                continue
+
+            try:
+                result = await detector.scan_parameter_safe(
+                    self.context.target_url, parameter,
+                )
+            except Exception as exc:
+                reason = f"XSS reflection screen failed: {type(exc).__name__}"
+                report = self._xss_input_report(
+                    str(parameter), XSSVerificationOutcome.ERROR, reason,
+                )
+                self._xss_verification_reports[
+                    f"input:{report.finding_fingerprint}:{parameter}"
+                ] = report
+                new_reports.append(report)
+                self._record_xss_coverage(
+                    parameter=str(parameter), outcome=TestOutcome.ERROR,
+                    reason=reason, family="XSS_REFLECTION",
+                )
+                self._outcomes.append(TestOutcome.ERROR)
+                self._reasons.append(f"XSS {parameter}: {reason}")
+                continue
+
+            if result.findings:
+                raise ValueError("XSSDetector must return candidates, never confirmed Findings")
+            if not result.candidates:
+                outcome = {
+                    TestOutcome.SKIPPED: XSSVerificationOutcome.NOT_TESTED,
+                    TestOutcome.BLOCKED: XSSVerificationOutcome.BLOCKED,
+                    TestOutcome.ERROR: XSSVerificationOutcome.ERROR,
+                    TestOutcome.PRESENT: XSSVerificationOutcome.INCONCLUSIVE,
+                    TestOutcome.ABSENT: XSSVerificationOutcome.INCONCLUSIVE,
+                    TestOutcome.INCONCLUSIVE: XSSVerificationOutcome.INCONCLUSIVE,
+                }[result.coverage_outcome]
+                report = self._xss_input_report(str(parameter), outcome, result.reason)
+                self._xss_verification_reports[
+                    f"input:{report.finding_fingerprint}:{parameter}"
+                ] = report
+                self._record_xss_coverage(
+                    parameter=str(parameter),
+                    outcome=(TestOutcome.INCONCLUSIVE
+                             if result.coverage_outcome == TestOutcome.ABSENT
+                             else result.coverage_outcome),
+                    reason=result.reason, family="XSS_REFLECTION",
+                )
+                self._outcomes.append(
+                    TestOutcome.INCONCLUSIVE
+                    if result.coverage_outcome == TestOutcome.ABSENT
+                    else result.coverage_outcome
+                )
+                self._reasons.append(f"XSS {parameter}: {result.reason}")
+                new_reports.append(report)
+                continue
+
+            for candidate in result.candidates:
+                if not isinstance(candidate, DetectionCandidate):
+                    raise TypeError("XSSDetector candidates must be DetectionCandidate values")
+                if (
+                    not is_xss_finding_type(candidate.finding_type)
+                    or candidate.target != redact_url(self.context.target_url)
+                    or candidate.parameter != parameter
+                    or candidate.method.upper() != "GET"
+                    or candidate.technique != "reflected-inert-marker-v1"
+                ):
+                    raise ValueError("XSS candidate identity does not match the scanned query input")
+
+                candidate_id = candidate_fingerprint(candidate)
+                prior_report = self._xss_verification_reports.get(candidate_id)
+                if prior_report is not None and prior_report.outcome == XSSVerificationOutcome.VERIFIED:
+                    new_reports.append(prior_report)
+                    continue
+
+                stored_candidate = self._store_candidate(candidate)
+                candidate_id = candidate_fingerprint(stored_candidate)
+                self._record_xss_coverage(
+                    parameter=str(parameter), outcome=TestOutcome.INCONCLUSIVE,
+                    reason="XSS detection produced an unverified inert-reflection candidate",
+                    family="XSS_REFLECTION",
+                )
+                if prior_report is None:
+                    verifier = XSSVerifier(
+                        detector.request_engine,
+                        detector.scope_engine,
+                        budget_manager=detector.budget_manager,
+                        scan_id=detector.scan_id,
+                        max_concurrent_requests=detector.max_concurrent_requests,
+                    )
+                    report = await verifier.verify(stored_candidate)
+                else:
+                    report = prior_report
+                if prior_report is None:
+                    self._xss_verification_reports[candidate_id] = report
+                new_reports.append(report)
+                self._reasons.append(f"XSS {parameter}: {report.reason}")
+
+                if report.outcome == XSSVerificationOutcome.VERIFIED:
+                    if (
+                        report.candidate_fingerprint != candidate_id
+                        or report.target != redact_url(self.context.target_url)
+                        or report.parameter != parameter
+                    ):
+                        raise RuntimeError("verified XSS report does not match the stored candidate")
+                    key = self._candidate_key(stored_candidate)
+                    current = self._candidates.get(key)
+                    if current is None or candidate_fingerprint(current) != report.candidate_fingerprint:
+                        raise RuntimeError("verified XSS candidate identity changed before promotion")
+                    del self._candidates[key]
+                    finding = self._finding_from_verified_xss_candidate(stored_candidate, report)
+                    finding.fingerprint = self.context.dedup_engine.generate_fingerprint(finding)
+                    self._raw_findings.setdefault(finding.fingerprint, finding)
+                    coverage_outcome = TestOutcome.PRESENT
+                else:
+                    coverage_outcome = {
+                        XSSVerificationOutcome.NOT_VERIFIED: TestOutcome.INCONCLUSIVE,
+                        XSSVerificationOutcome.INCONCLUSIVE: TestOutcome.INCONCLUSIVE,
+                        XSSVerificationOutcome.NOT_TESTED: TestOutcome.SKIPPED,
+                        XSSVerificationOutcome.BLOCKED: TestOutcome.BLOCKED,
+                        XSSVerificationOutcome.ERROR: TestOutcome.ERROR,
+                    }[report.outcome]
+                self._record_xss_coverage(
+                    parameter=str(parameter), outcome=coverage_outcome,
+                    reason=report.reason, family="XSS_VERIFICATION",
+                )
+                self._outcomes.append(coverage_outcome)
+        return new_reports
+
+    @staticmethod
+    def _finding_from_verified_xss_candidate(
+        candidate: DetectionCandidate,
+        report: XSSVerificationReport,
+    ) -> Finding:
+        if (
+            report.outcome != XSSVerificationOutcome.VERIFIED
+            or report.candidate_fingerprint != candidate_fingerprint(candidate)
+            or report.candidate_confidence != candidate.confidence
+            or not report.proof_token_match
+            or not report.payload_reflected_as_script
+            or not report.request_telemetry_complete
+            or not report.cleanup_completed
+        ):
+            raise ValueError("only a matching VERIFIED browser report may authorize XSS promotion")
+        evidence = []
+        for item in candidate.evidence[:6]:
+            evidence.append(
+                f"Detection: {sanitize_snippet(item.matched_signature, 120)}; "
+                f"{item.request_method} {item.request_url}; HTTP {item.response_status}; "
+                f"{sanitize_snippet(item.response_body_snippet, 240)}"
+            )
+        evidence.append(
+            "Browser verification VERIFIED: controlled HTML body script executed and the exact "
+            f"per-attempt token matched; token_sha256={report.proof_token_sha256}; "
+            f"candidate={report.candidate_fingerprint}; requests={report.request_count}; "
+            f"RequestEngine exchanges={report.request_engine_exchange_count}; "
+            f"budget reservations={report.budget_reservation_count}."
+        )
+        return Finding(
+            type="XSS",
+            target=candidate.target,
+            parameter=candidate.parameter,
+            method=candidate.method.upper(),
+            severity=Severity.HIGH,
+            confidence=candidate.confidence,
+            source="XSSVerifier",
+            status=FindingStatus.OPEN,
+            observation_status=ObservationStatus.PRESENT,
+            evidence=evidence,
+            remediation=("Apply context-appropriate output encoding and avoid inserting "
+                         "untrusted input as executable HTML or JavaScript."),
+            requires_human_review=True,
+        )
+
     @staticmethod
     def _finding_from_verified_candidate(
         candidate: DetectionCandidate,
@@ -440,6 +734,7 @@ class AssessmentOrchestrator:
             candidates=list(self._candidates.values()),
             coverage_records=self.context.coverage.records(),
             verification_reports=list(self._verification_reports.values()),
+            xss_verification_reports=list(self._xss_verification_reports.values()),
             coverage_outcome=outcome,
             reason="; ".join(dict.fromkeys(self._reasons)),
         )

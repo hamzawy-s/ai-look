@@ -13,7 +13,10 @@ class Reporter:
         candidates = []
         reports_by_candidate = {
             report.candidate_fingerprint: report
-            for report in getattr(result, "verification_reports", [])
+            for report in (
+                list(getattr(result, "verification_reports", []))
+                + list(getattr(result, "xss_verification_reports", []))
+            )
             if getattr(report, "candidate_fingerprint", None)
         }
         for candidate in getattr(result, "candidates", []):
@@ -35,12 +38,22 @@ class Reporter:
                 coverage_records.append(record)
         verification_reports = []
         for report in getattr(result, "verification_reports", []):
-            verification_reports.append(asdict(report) if is_dataclass(report) else report)
+            if hasattr(report, "model_dump"):
+                verification_reports.append(report.model_dump(mode="json"))
+            else:
+                verification_reports.append(asdict(report) if is_dataclass(report) else report)
+        xss_verification_reports = []
+        for report in getattr(result, "xss_verification_reports", []):
+            if hasattr(report, "model_dump"):
+                xss_verification_reports.append(report.model_dump(mode="json"))
+            else:
+                xss_verification_reports.append(asdict(report) if is_dataclass(report) else report)
         payload = {
             "findings": [finding.model_dump(mode="json") for finding in result.findings],
             "candidates": candidates,
             "coverage_records": coverage_records,
             "verification_reports": verification_reports,
+            "xss_verification_reports": xss_verification_reports,
             "coverage_outcome": result.coverage_outcome.value,
             "reason": result.reason,
             "evidence_count": result.evidence_count,

@@ -4,3 +4,4 @@ httpcore==1.0.9
 aiosqlite==0.22.1
 pytest==9.2.0
 pytest-asyncio==1.5.0
+playwright==1.65.2
