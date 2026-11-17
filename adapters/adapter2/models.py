@@ -51,3 +51,4 @@ class AdapterContext(BaseModel):
     request_engine: Any = None
     coverage: Any = None
     dedup_engine: Any = None
+    budget_manager: Any = None

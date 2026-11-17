@@ -652,6 +652,7 @@ class RequestEngine:
         headers: Optional[Dict[str, str]] = None,
         content: Any = None,
         timeout: Any = None,
+        follow_redirects: Optional[bool] = None,
     ) -> RequestResult:
         if self._closed:
             return RequestResult(
@@ -664,6 +665,8 @@ class RequestEngine:
             current_headers = _normalize_headers(headers)
             current_body = _validate_body(content, self._config.max_request_bytes)
             self._effective_timeout(timeout)
+            if follow_redirects is not None and type(follow_redirects) is not bool:
+                raise _InvalidRequest("follow_redirects must be a boolean or None")
         except _InvalidRequest as exc:
             return RequestResult(
                 ok=False, url=str(url), method=str(method),
@@ -675,7 +678,8 @@ class RequestEngine:
             self._active.add(task)
         try:
             return await self._send_loop(
-                url, current_method, current_headers, current_body, timeout
+                url, current_method, current_headers, current_body, timeout,
+                follow_redirects,
             )
         finally:
             if task is not None:
@@ -688,7 +692,11 @@ class RequestEngine:
         current_headers: Dict[str, str],
         current_body: Optional[bytes],
         timeout: Any,
+        follow_redirects: Optional[bool] = None,
     ) -> RequestResult:
+        should_follow_redirects = (
+            self._config.follow_redirects if follow_redirects is None else follow_redirects
+        )
         current_url = url
         chain: List[str] = []
         visited: Set[Tuple[str, str]] = set()
@@ -728,7 +736,7 @@ class RequestEngine:
                 return result
             last = result
 
-            if not self._config.follow_redirects:
+            if not should_follow_redirects:
                 return result
             if result.status_code not in _REDIRECT_STATUSES:
                 return result

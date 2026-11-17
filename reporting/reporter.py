@@ -4,13 +4,27 @@ import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from core_engine import Finding
+from adapters.adapter2.framework import DetectionCandidate
+from adapters.adapter2.sqli_verification import candidate_fingerprint
 
 class Reporter:
     def export_scan_result(self, result, path: str) -> None:
         """Export candidates and confirmed findings as distinct report sections."""
         candidates = []
+        reports_by_candidate = {
+            report.candidate_fingerprint: report
+            for report in getattr(result, "verification_reports", [])
+            if getattr(report, "candidate_fingerprint", None)
+        }
         for candidate in getattr(result, "candidates", []):
-            candidates.append(asdict(candidate) if is_dataclass(candidate) else candidate)
+            item = asdict(candidate) if is_dataclass(candidate) else candidate
+            if isinstance(candidate, DetectionCandidate):
+                identity = candidate_fingerprint(candidate)
+                item["candidate_fingerprint"] = identity
+                report = reports_by_candidate.get(identity)
+                item["verification_outcome"] = report.outcome.value if report else None
+                item["verification_reason"] = report.reason if report else None
+            candidates.append(item)
         coverage_records = []
         for record in getattr(result, "coverage_records", []):
             if hasattr(record, "model_dump"):
@@ -19,10 +33,14 @@ class Reporter:
                 coverage_records.append(asdict(record))
             else:
                 coverage_records.append(record)
+        verification_reports = []
+        for report in getattr(result, "verification_reports", []):
+            verification_reports.append(asdict(report) if is_dataclass(report) else report)
         payload = {
             "findings": [finding.model_dump(mode="json") for finding in result.findings],
             "candidates": candidates,
             "coverage_records": coverage_records,
+            "verification_reports": verification_reports,
             "coverage_outcome": result.coverage_outcome.value,
             "reason": result.reason,
             "evidence_count": result.evidence_count,
