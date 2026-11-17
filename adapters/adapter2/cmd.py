@@ -1,4 +1,12 @@
-"""Command injection adapter interface."""
+"""Command injection adapter boundary; no target command is executed."""
+from .framework import AdapterScanResult
+from .models import TestOutcome
+
+
 class CommandInjectionDetector:
     async def scan(self, request_context):
-        raise NotImplementedError("Implement non-destructive command injection checks.")
+        return AdapterScanResult(
+            findings=[], candidates=[], coverage_outcome=TestOutcome.SKIPPED,
+            reason="CMDi verification is not implemented; no shell payload is sent",
+            evidence_count=0,
+        )
