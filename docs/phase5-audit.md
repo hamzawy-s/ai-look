@@ -1,6 +1,6 @@
 # Phase 5 Audit — Safe SQL Injection Verification
 
-**Status:** Implementation and independent reviews complete; all review findings are resolved. Windows regression and compile validation passed. Phase 5 acceptance is pending commit and remote branch verification.
+**Status: ACCEPTED.** Independent review findings are resolved, the Windows regression suite and compile checks passed, and the dedicated branch was pushed with its remote hash verified.
 
 ## 1. Repository recovery and baseline
 
@@ -100,4 +100,4 @@ Two protected files remain byte-identical to the accepted baseline:
 
 ## 12. Git delivery
 
-The implementation is isolated on `phase5/sqli-verification`, based on accepted Phase 4 `e851aa24d317006c42903bb9392355e98618a8ed`. The required feature commit and remote branch hash will be recorded here after delivery.
+The implementation is isolated on `phase5/sqli-verification`, based on accepted Phase 4 `e851aa24d317006c42903bb9392355e98618a8ed`. Feature commit `40325f926226b81f655756b10fde4e134b3cdd8e` (`feat: implement safe SQLi verification`) was pushed to `origin/phase5/sqli-verification`; `git ls-remote` matched the local commit. A final documentation commit records this acceptance, and the remote branch head is checked again after that commit.

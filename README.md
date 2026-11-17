@@ -4,7 +4,7 @@
 
 ### An AI-Augmented, Lifecycle-Wide Web Application Security Assessment Platform
 
-![Phases 0–4 accepted; Phase 5 delivery pending](https://img.shields.io/badge/Phases%200%E2%80%934-Accepted%20%7C%20Phase%205%20Delivery-691A26)
+![Phases 0–5 accepted](https://img.shields.io/badge/Phases%200%E2%80%935-Accepted-691A26)
 ![Python 3.10](https://img.shields.io/badge/Python-3.10-36454F?logo=python&logoColor=white)
 [![GitHub stars](https://img.shields.io/github/stars/hamzawy-s/ai-look?style=flat&color=691A26)](https://github.com/hamzawy-s/ai-look/stargazers)
 
@@ -93,11 +93,11 @@ For a multi-adapter scan, create one `BudgetManager` and inject the same instanc
 | Phase 2 | Scope engine | **Accepted** |
 | Phase 3 | Request engine | **Accepted** |
 | Phase 4 | Unified execution and orchestration | **Accepted** |
-| Phase 5 | Safe SQLi verification and confidence validation | **Reviewed and validated; remote delivery pending** |
+| Phase 5 | Safe SQLi verification and confidence validation | **Accepted** |
 
 Phase 4 validation is recorded in [`docs/phase4-audit.md`](docs/phase4-audit.md). The original Windows Python 3.10.11 Phase 4 run recorded 242 collected and passing tests, 34 focused Phase 4 tests, a passing compile check, and a passing Phase 0–3 plus adapter regression set. The GitHub synchronization also retains and updates a remote-only Core fingerprint regression test; the combined repository suite therefore has one additional test.
 
-Phase 5 design, security boundaries, independent review results, and current validation are recorded in [`docs/phase5-audit.md`](docs/phase5-audit.md). Phase 5 acceptance is pending remote branch verification.
+Phase 5 design, security boundaries, independent review results, and validation are recorded in [`docs/phase5-audit.md`](docs/phase5-audit.md). The dedicated Phase 5 branch was pushed and its remote hash verified.
 
 ## Repository structure
 
@@ -196,7 +196,7 @@ The suite covers Core lifecycle behavior, adapter contracts, scope enforcement, 
 
 ## Roadmap
 
-**Phase 5 — Safe SQL Injection Verification & Confidence Validation** is independently reviewed and locally validated. Its status will be marked accepted after the dedicated branch is pushed and its remote hash is verified. Later phases remain provisional until separately defined.
+**Phase 5 — Safe SQL Injection Verification & Confidence Validation** is accepted. Later phases remain provisional until separately defined.
 
 ## Contribution and license
 
