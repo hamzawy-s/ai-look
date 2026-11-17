@@ -1,11 +1,14 @@
 """Advanced, non-persistent Cross-Site Scripting detection adapter."""
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
 from dataclasses import dataclass
 from enum import Enum
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 from .framework import (
     AdapterScanResult,
@@ -19,6 +22,7 @@ from .framework import (
     response_is_analyzable,
 )
 from .models import TestOutcome
+from .redaction import sanitize_snippet
 
 
 class XSSContext(Enum):
@@ -28,6 +32,91 @@ class XSSContext(Enum):
     JAVASCRIPT_CODE = "JAVASCRIPT_CODE"
     URL_PARAMETER = "URL_PARAMETER"
     UNKNOWN = "UNKNOWN"
+
+
+_SAFE_QUERY_PARAMETER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}\Z")
+_UNSUPPORTED_TEXT_ELEMENTS = frozenset({
+    "script", "style", "textarea", "title", "xmp", "iframe", "noembed",
+    "noframes", "noscript", "plaintext", "template",
+})
+_VOID_ELEMENTS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+})
+
+
+class _MarkerContextParser(HTMLParser):
+    """Conservative context classifier for a unique, inert response marker."""
+
+    def __init__(self, marker: str):
+        super().__init__(convert_charrefs=False)
+        self.marker = marker
+        self.stack: List[str] = []
+        self.matches: List[XSSContext] = []
+
+    def handle_starttag(self, tag, attrs):
+        lowered = tag.lower()
+        if any(self.marker in (value or "") for _, value in attrs):
+            self.matches.append(XSSContext.HTML_ATTRIBUTE)
+        if lowered not in _VOID_ELEMENTS:
+            self.stack.append(lowered)
+
+    def handle_startendtag(self, tag, attrs):
+        if any(self.marker in (value or "") for _, value in attrs):
+            self.matches.append(XSSContext.HTML_ATTRIBUTE)
+
+    def handle_endtag(self, tag):
+        lowered = tag.lower()
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index] == lowered:
+                del self.stack[index:]
+                return
+
+    def handle_data(self, data):
+        if self.marker not in data:
+            return
+        if "script" in self.stack:
+            context = XSSContext.JAVASCRIPT_CODE
+        elif any(tag in _UNSUPPORTED_TEXT_ELEMENTS for tag in self.stack):
+            context = XSSContext.UNKNOWN
+        elif "svg" in self.stack or "math" in self.stack:
+            context = XSSContext.UNKNOWN
+        else:
+            context = XSSContext.HTML_BODY
+        self.matches.append(context)
+
+    def handle_comment(self, data):
+        if self.marker in data:
+            self.matches.append(XSSContext.UNKNOWN)
+
+
+def _marker_context(body: str, marker: str) -> XSSContext:
+    parser = _MarkerContextParser(marker)
+    try:
+        parser.feed(body)
+        parser.close()
+    except (AssertionError, ValueError):
+        return XSSContext.UNKNOWN
+    if body.count(marker) != 1 or len(parser.matches) != 1:
+        return XSSContext.UNKNOWN
+    return parser.matches[0]
+
+
+def _supported_xss_target(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        _ = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        parsed.scheme.lower() in {"http", "https"}
+        and parsed.hostname
+        and parsed.netloc
+        and "@" not in parsed.netloc
+        and not parsed.query
+        and not parsed.fragment
+        and "?" not in url.split("#", 1)[0]
+    )
 
 
 class XSSEncoding(Enum):
@@ -385,6 +474,126 @@ class XSSDetector(BaseVulnerabilityAdapter):
         if dom and dom.is_vulnerable:
             return self._create_xss_candidate(url, parameter, dom)
         return None
+
+    async def scan_parameter_safe(self, url: str, parameter: str) -> AdapterScanResult:
+        """Screen one GET parameter with an inert marker for Phase 6.
+
+        This path deliberately does not call the legacy alert-style probe list.
+        It records reflection as a candidate signal only; the browser verifier
+        is responsible for proving execution.
+        """
+        if (
+            not isinstance(parameter, str)
+            or _SAFE_QUERY_PARAMETER.fullmatch(parameter) is None
+            or not _supported_xss_target(url)
+        ):
+            return AdapterScanResult(
+                [], [], TestOutcome.SKIPPED,
+                "Phase 6 supports query-free HTTP(S) targets and conservative query parameter names",
+                0,
+            )
+        if not self._is_authorized(url, "GET"):
+            return AdapterScanResult(
+                [], [], TestOutcome.SKIPPED,
+                "scope rejected before Phase 6 reflection screening", 0,
+            )
+        if self.request_engine is None or not callable(
+            getattr(self.request_engine, "send_request", None)
+        ):
+            return AdapterScanResult(
+                [], [], TestOutcome.ERROR, "request engine unavailable", 0,
+            )
+
+        marker = f"AILOOKREFLECT{secrets.token_hex(16)}"
+        request = TestRequest(
+            url=url,
+            params={parameter: marker},
+            payload=Payload(
+                marker, PayloadType.BENIGN,
+                description="Phase 6 inert reflected-input marker",
+            ),
+            follow_redirects=False,
+            timeout_seconds=5.0,
+        )
+        attempt = await self.execute_request(request)
+        if not attempt.ok:
+            self._capture_attempt(attempt)
+            return AdapterScanResult(
+                [], [], attempt.coverage_outcome,
+                f"inert reflection screen did not complete: {attempt.reason}", 0,
+            )
+
+        response = attempt.response
+        if not response_is_analyzable(response):
+            return AdapterScanResult(
+                [], [], TestOutcome.INCONCLUSIVE,
+                "inert reflection response was incomplete, truncated, or undecodable", 0,
+            )
+        if not 200 <= response.status_code < 300:
+            return AdapterScanResult(
+                [], [], TestOutcome.INCONCLUSIVE,
+                f"inert reflection response returned HTTP {response.status_code}", 0,
+            )
+        if marker not in response.body:
+            return AdapterScanResult(
+                [], [], TestOutcome.INCONCLUSIVE,
+                "the inert marker was not reflected; this screen cannot establish absence of XSS", 0,
+            )
+
+        content_type = next(
+            (value for key, value in response.headers.items()
+             if key.lower() == "content-type"),
+            "",
+        )
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        context = (
+            _marker_context(response.body, marker)
+            if media_type == "text/html"
+            else XSSContext.UNKNOWN
+        )
+        reflection = {
+            "exact_match": True,
+            "reflection_context": context.value.lower(),
+        }
+        confidence = self._calculate_xss_confidence(marker, reflection, response)
+        evidence = Evidence.from_request_response(
+            request, response, "Phase 6 inert reflection marker observed",
+        )
+        marker_index = response.body.find(marker)
+        reflection_snippet = response.body[max(0, marker_index - 180):marker_index + len(marker) + 180]
+        evidence = Evidence(**{
+            **evidence.__dict__,
+            "response_body_snippet": sanitize_snippet(reflection_snippet, 800),
+            "contextual_analysis": (
+                "phase6_reflection_marker_v1; "
+            f"response_content_type={sanitize_snippet(content_type, 160) or 'missing'}; "
+                f"reflection_context={context.value}; "
+                f"marker_sha256={hashlib.sha256(marker.encode()).hexdigest()}"
+            ),
+            "matched_signature": marker,
+        })
+        candidate = self.make_candidate(
+            finding_type="XSS",
+            target=url,
+            parameter=parameter,
+            method="GET",
+            technique="reflected-inert-marker-v1",
+            confidence=confidence,
+            evidence=[evidence],
+            reason=(
+                f"inert input reflected in {context.value}; browser execution has not been verified"
+            ),
+        )
+        return AdapterScanResult(
+            findings=[],
+            candidates=[candidate],
+            coverage_outcome=TestOutcome.INCONCLUSIVE,
+            reason=(
+                "inert input reflection produced an XSS candidate; "
+                f"identified context={context.value}"
+            ),
+            evidence_count=1,
+        )
 
     async def scan_parameter(self, url, parameter, original_value=None):
         if not self._is_authorized(url, "GET"):
