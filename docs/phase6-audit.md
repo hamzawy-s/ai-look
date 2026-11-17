@@ -119,4 +119,4 @@ Final validation was run from the repository `.venv` on Windows with Python 3.10
 
 ## 9. Git delivery
 
-The Phase 6 implementation is isolated on `phase6/reflected-xss-verification`, based on the merged `main` branch at `dbac55f5fdb9ad42cff8927b372a94fc78feee38`. Exact Phase 6 commit hashes and final working-tree state will be recorded after commit.
+The Phase 6 implementation is isolated on `phase6/reflected-xss-verification`, based on the merged `main` branch at `dbac55f5fdb9ad42cff8927b372a94fc78feee38`. Feature commit: `4f53680` (`feat: implement safe reflected XSS verification`). The delivery is local to this branch; it was not pushed, merged, or opened as a pull request. The final documentation commit and working-tree state are reported in the delivery summary.
